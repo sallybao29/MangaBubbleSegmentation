@@ -7,8 +7,8 @@ import cv2
 
 path = os.getcwd()
 pathStorage = os.path.join(path, "Models", "Seg")
-pathLabelled = (os.path.join(path, "LabelledValid"), os.path.join(path, "LabelledValid"))
-pathMask = (os.path.join(path, "TrainingValid"), os.path.join(path, "TrainingValid"))
+pathGray = (os.path.join(path, "TrainingValid"), os.path.join(path, "TrainingInvalid"))
+pathMask = (os.path.join(path, "LabelledValid"), os.path.join(path, "LabelledInvalid"))
 
 
 img_input = layers.Input(shape=(256, 256, 1))
@@ -32,13 +32,13 @@ conv5_1 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(pool4)
 conv5_2 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(conv5_1)
 pool5 = layers.MaxPooling2D((2, 2))(conv5_2)
 
-flat1 = layers.Flatten()(layers.Conv2D(1, (1,1), activation='sigmoid')(pool5))
+prenet = layers.Flatten()(layers.Conv2D(1, (1,1), activation='sigmoid')(pool5))
+flat1 = layers.Dense(64, activation='relu')(prenet)
 flat2 = layers.Dense(64, activation='relu')(flat1)
 flat3 = layers.Dense(64, activation='relu')(flat2)
+postnet = layers.Reshape((8,8,1))(flat3)
 
-pool6 = layers.Reshape((8,8,1))(flat3)
-
-concat1 = layers.concatenate([layers.UpSampling2D((2,2))(pool6), conv5_2], -1)
+concat1 = layers.concatenate([layers.UpSampling2D((2,2))(postnet), conv5_2], -1)
 uconv1_1 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(concat1)
 uconv1_2 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(uconv1_1)
 
@@ -59,7 +59,9 @@ uconv5_1 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(concat5)
 uconv5_2 = layers.Conv2D(8, (3, 3), padding="same", activation='relu')(uconv5_1)
 
 img_output = layers.Conv2D(1, (1,1), activation='sigmoid')(uconv5_2)
+
 model = models.Model(img_input, img_output)
+
 model.summary()
 
 def batches(pathGrays, pathMasks, batch_size, steps):
@@ -72,22 +74,30 @@ def batches(pathGrays, pathMasks, batch_size, steps):
             data[counter] = np.expand_dims(cv2.imread(os.path.join(pathGrays[folder], paths[i]), cv2.IMREAD_GRAYSCALE), -1)
             mask[counter] = np.expand_dims(cv2.imread(os.path.join(pathMasks[folder], paths[i]), cv2.IMREAD_GRAYSCALE), -1)
             counter += 1
-            if counter == 32:
+            if counter == batch_size:
                 counter = 0
-                yield (data/128.0 - 1.0), (mask/128.0 - 1.0)
+                yield (data/128.0 - 1.0), (mask/255.0)
 
 model.compile(optimizer='adam',
               loss="binary_crossentropy",
               metrics=['accuracy'])
 
-for i in range(5):
-    pathOutput = os.path.join(pathStorage, str(i) + ".ckpt")
-    for x, y in batches(pathLabelled, pathMask, 32, [5000, 75000]):
+for i in range(1,6):
+    counter = 0
+    # should be 75000 instead of 45000
+    for x, y in batches(pathGray, pathMask, 32, [5000, 75000]):
         model.train_on_batch(x,y)
-    model.save(pathOutput)
-    sum = [0.0, 0.0]
-    for x, y in batches(pathLabelled, pathMask, 32, [5000, 75000]):
-        tmp = model.evaluate(x,y, verbose = 0)
-        sum[0] += tmp[0]
-        sum[1] += tmp[1]
-    print(sum[0]/80000.0, sum[1]/80000.0)
+        counter+=1
+        if counter % 800 == 0:
+            print(counter//800,"%")
+        if counter % 8000 == 0:
+            model.save(os.path.join(pathStorage, str(i) + "_" + str(counter // 8000) + ".ckpt"))
+            print("Saved", str(i) + "_" + str(counter // 8000) + ".ckpt")
+    sumVal = [0.0, 0.0]
+    counter = 0
+    for x, y in batches(pathGray, pathMask, 32, [5000, 75000]):
+        tmp = model.evaluate(x, y, verbose = 0)
+        sumVal[0] += tmp[0]
+        sumVal[1] += tmp[1]
+    print(sumVal[0]/80000.0, sumVal[1]/80000.0)
+
